@@ -11,9 +11,9 @@ For example calls the `math` script with the argument `2x + 2`
 
 The location of all scripts in by default `$HOME/.config/mad/bin/` but can be changed by `MAD_PATH`
 
-The script is called with the first argument being all the given argument and then the same argument splitted by spaces.
+The script is called with the argument splitted by spaces, the full input is passed via `MAD_FULLINPUT`
 ```
-$HOME/.config/mad/bin/math "2x + 2" 2x + 2
+MAD_FULLINPUT="2x + 2" $HOME/.config/mad/bin/math 2x + 2
 ```
 
 ### Parameters
