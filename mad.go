@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"errors"
+	"flag"
 	"fmt"
 	"io/ioutil"
 	"os"
@@ -23,6 +24,7 @@ type Enviroment struct {
 
 func (e Enviroment) Env() []string {
 	return []string{
+
 		fmt.Sprintf("MAD_ISPREVIEW=%t", e.IsPreview),
 		fmt.Sprintf("MAD_ISBLOCK=%t", e.IsBlock),
 		fmt.Sprintf("MAD_FULLINPUT=%s", e.FullInput),
@@ -31,7 +33,9 @@ func (e Enviroment) Env() []string {
 }
 
 func main() {
-	fl := os.Args[1]
+	preview := flag.Bool("preview", false, "Render preview")
+	flag.Parse()
+	fl := flag.Arg(0)
 	madPath := os.Getenv("MAD_PATH")
 	if madPath == "" {
 		home, err := os.UserHomeDir()
@@ -48,7 +52,7 @@ func main() {
 		panic(err)
 	}
 	contentString := string(content)
-	match := MakeMatch(madPath)
+	match := MakeMatch(madPath, *preview)
 	out := parseReg.ReplaceAllStringFunc(contentString, match)
 	fmt.Println(out)
 }
@@ -89,7 +93,7 @@ func Parse(input string) (cmd string, arg string) {
 
 // MakeMatch builds Match(string) string
 // which elaborate the match with the execution of the command
-func MakeMatch(path string) func(string) string {
+func MakeMatch(path string, isPreview bool) func(string) string {
 	return func(match string) string {
 		cmd, arg := Parse(match)
 		exe, found := SearchInPath(path, cmd)
@@ -102,15 +106,28 @@ func MakeMatch(path string) func(string) string {
 		args := strings.Split(arg, " ")
 
 		env := Enviroment{
+			IsPreview: isPreview,
 			IsBlock:   strings.ContainsRune(match, '\n'),
-			IsPreview: false,
 			FullInput: arg,
 			InputLen:  len(args),
 		}
 
 		out, ok := Execute(exe, env, args...)
-		_ = ok
-		return out
+		if !ok {
+			fmt.Fprintf(os.Stderr, "Cannot execute %s\n", exe)
+		}
+
+		if isPreview {
+		}
+
+		switch {
+		case isPreview && out != "":
+			return fmt.Sprintf("%s\n<!--\f%s\n-->", match, out)
+		case isPreview && out == "":
+			return match
+		default:
+			return out
+		}
 	}
 }
 

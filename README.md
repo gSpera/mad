@@ -31,6 +31,6 @@ The boolean type is either "true" or "false"
 
 ### Roadmap
 
-- [ ] Preview
+- [X] Preview
 - [ ] Multiple Output
 - [ ] Better parser
