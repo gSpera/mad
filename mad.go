@@ -12,6 +12,24 @@ import (
 	"strings"
 )
 
+// Enviroment contain the mad specific enviroment variables used
+// in the execution of the current script
+type Enviroment struct {
+	IsPreview bool
+	IsBlock   bool
+	FullInput string
+	InputLen  int
+}
+
+func (e Enviroment) Env() []string {
+	return []string{
+		fmt.Sprintf("MAD_ISPREVIEW=%t", e.IsPreview),
+		fmt.Sprintf("MAD_ISBLOCK=%t", e.IsBlock),
+		fmt.Sprintf("MAD_FULLINPUT=%s", e.FullInput),
+		fmt.Sprintf("MAD_INPUTLEN=%d", e.InputLen),
+	}
+}
+
 func main() {
 	fl := os.Args[1]
 	madPath := os.Getenv("MAD_PATH")
@@ -30,9 +48,8 @@ func main() {
 		panic(err)
 	}
 	contentString := string(content)
-	reg := regexp.MustCompile(`\[.*\]:# \(?(.*)\)?`)
 	match := MakeMatch(madPath)
-	out := reg.ReplaceAllStringFunc(contentString, match)
+	out := parseReg.ReplaceAllStringFunc(contentString, match)
 	fmt.Println(out)
 }
 
@@ -59,7 +76,7 @@ func SearchInPath(searchPath string, exe string) (string, bool) {
 	return "", false
 }
 
-var parseReg = regexp.MustCompile(`\[(.*)]:# \((.*)\)`)
+var parseReg = regexp.MustCompile(`(?ms)\[(.*)]:#\s*\(\s*(.*)\s*\)`)
 
 // Parse parses the splits the matched string [CMD]:# (ARG)
 // in CMD and ARG
@@ -81,7 +98,17 @@ func MakeMatch(path string) func(string) string {
 			fmt.Fprintln(os.Stderr, "Cannot find", cmd)
 			return match
 		}
-		out, ok := Execute(exe, arg)
+
+		args := strings.Split(arg, " ")
+
+		env := Enviroment{
+			IsBlock:   strings.ContainsRune(match, '\n'),
+			IsPreview: false,
+			FullInput: arg,
+			InputLen:  len(args),
+		}
+
+		out, ok := Execute(exe, env, args...)
 		_ = ok
 		return out
 	}
@@ -90,11 +117,9 @@ func MakeMatch(path string) func(string) string {
 //Execute executes the given command exe with the argument arg and returns the output
 // if the command executes successfully ok is true and output contains stdout
 // if the command doesn't execute successfully ok is false and output contains stderr
-func Execute(exe, arg string) (output string, ok bool) {
-	args := strings.Split(arg, " ")
-	args = append([]string{arg}, args...)
-
+func Execute(exe string, env Enviroment, args ...string) (output string, ok bool) {
 	c := exec.Command(exe, args...)
+	c.Env = append(c.Env, env.Env()...)
 	stdout := &bytes.Buffer{}
 	stderr := &bytes.Buffer{}
 	c.Stdout = stdout
