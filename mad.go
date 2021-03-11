@@ -5,37 +5,24 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"io/ioutil"
+	"log"
 	"os"
 	"os/exec"
 	"path"
-	"regexp"
 	"strings"
 )
 
-// Enviroment contain the mad specific enviroment variables used
-// in the execution of the current script
-type Enviroment struct {
-	IsPreview bool
-	IsBlock   bool
-	FullInput string
-	InputLen  int
-}
-
-func (e Enviroment) Env() []string {
-	return []string{
-
-		fmt.Sprintf("MAD_ISPREVIEW=%t", e.IsPreview),
-		fmt.Sprintf("MAD_ISBLOCK=%t", e.IsBlock),
-		fmt.Sprintf("MAD_FULLINPUT=%s", e.FullInput),
-		fmt.Sprintf("MAD_INPUTLEN=%d", e.InputLen),
-	}
-}
-
 func main() {
 	preview := flag.Bool("preview", false, "Render preview")
+	debug := flag.Bool("debug", false, "Debug messages")
 	flag.Parse()
 	fl := flag.Arg(0)
+	if !*debug {
+		log.Default().SetOutput(io.Discard)
+	}
+
 	madPath := os.Getenv("MAD_PATH")
 	if madPath == "" {
 		home, err := os.UserHomeDir()
@@ -47,14 +34,61 @@ func main() {
 		madPath = path.Join(home, ".config", "mad", "bin")
 	}
 
+	env := Enviroment{
+		IsPreview: *preview,
+
+		searchPath: madPath,
+	}
+
 	content, err := ioutil.ReadFile(fl)
 	if err != nil {
 		panic(err)
 	}
-	contentString := string(content)
-	match := MakeMatch(madPath, *preview)
-	out := parseReg.ReplaceAllStringFunc(contentString, match)
-	fmt.Println(out)
+	contentRune := []rune(string(content))
+
+	var out io.Writer = os.Stdout
+	found := true
+	var index, newIndex, nextIndex int
+	var cmd Command
+
+	log.Println("Init")
+	for found {
+		log.Println("Searching")
+		newIndex, found = SearchCommand(contentRune, index)
+		if !found {
+			log.Println("\tNot found:", newIndex, found)
+
+			// No new command, exit from loop and write everything
+			log.Printf("Write: [%d:%d]: \"%s\"\n", index, len(contentRune), string(contentRune[index:]))
+			writeRunes(out, contentRune[index:])
+			break
+		}
+		log.Printf(" - %d:%d %t '%c'\n", index, newIndex, found, contentRune[newIndex])
+
+		log.Println("Parsing")
+		cmd, nextIndex, err = ParseCommand(contentRune, newIndex)
+		if err != nil {
+			log.Println("Cannot parse", err)
+			log.Printf("Write: [%d:%d]: \"%s\"\n", index, nextIndex, string(contentRune[index:nextIndex]))
+			// Not a command, write everything and the command and continue
+			writeRunes(out, contentRune[index:nextIndex])
+
+			index = nextIndex
+			continue
+		}
+		log.Println(" ", cmd, newIndex, err)
+
+		env.IsBlock = strings.ContainsRune(cmd.Arg, '\n')
+		env.FullInput = cmd.Arg
+
+		// Write anything
+		writeRunes(out, contentRune[index:newIndex])
+		// Execute
+		ExecuteCommand(out, cmd, env)
+		index = nextIndex
+	}
+
+	log.Println("Done")
 }
 
 // SearchInPath searches in the path the exe filename
@@ -80,61 +114,41 @@ func SearchInPath(searchPath string, exe string) (string, bool) {
 	return "", false
 }
 
-var parseReg = regexp.MustCompile(`(?ms)\[(.*)]:#\s*\(\s*(.*)\s*\)`)
-
-// Parse parses the splits the matched string [CMD]:# (ARG)
-// in CMD and ARG
-func Parse(input string) (cmd string, arg string) {
-	ret := parseReg.FindStringSubmatch(input)
-	cmd = ret[1]
-	arg = ret[2]
-	return
-}
-
-// MakeMatch builds Match(string) string
-// which elaborate the match with the execution of the command
-func MakeMatch(path string, isPreview bool) func(string) string {
-	return func(match string) string {
-		cmd, arg := Parse(match)
-		exe, found := SearchInPath(path, cmd)
-		_ = arg
-		if !found {
-			fmt.Fprintln(os.Stderr, "Cannot find", cmd)
-			return match
-		}
-
-		args := strings.Split(arg, " ")
-
-		env := Enviroment{
-			IsPreview: isPreview,
-			IsBlock:   strings.ContainsRune(match, '\n'),
-			FullInput: arg,
-			InputLen:  len(args),
-		}
-
-		out, ok := Execute(exe, env, args...)
-		if !ok {
-			fmt.Fprintf(os.Stderr, "Cannot execute %s\n", exe)
-		}
-
-		if isPreview {
-		}
-
-		switch {
-		case isPreview && out != "":
-			return fmt.Sprintf("%s\n<!--\f%s\n-->", match, out)
-		case isPreview && out == "":
-			return match
-		default:
-			return out
-		}
+// ExecuteCommand elaborate the match with the execution of the command
+func ExecuteCommand(w io.Writer, cmd Command, env Enviroment) bool {
+	exe, found := SearchInPath(env.searchPath, cmd.ScriptName)
+	if !found {
+		// Write source
+		log.Println("Not found script")
+		fmt.Fprint(w, cmd.Source)
+		return false
 	}
+
+	args := strings.Split(cmd.Arg, " ")
+
+	out, ok := Execute(exe, args, env)
+	if !ok {
+		fmt.Fprintf(os.Stderr, "Cannot execute %s\n", exe)
+		fmt.Fprint(w, cmd.Source)
+		return false
+	}
+
+	switch {
+	case env.IsPreview && out != "":
+		fmt.Fprintf(w, "%s\n<!--\f%s\n-->", cmd.Source, out)
+	case env.IsPreview && out == "":
+		fmt.Fprint(w, cmd.Source)
+	default:
+		fmt.Fprint(w, out)
+	}
+
+	return true
 }
 
 //Execute executes the given command exe with the argument arg and returns the output
 // if the command executes successfully ok is true and output contains stdout
 // if the command doesn't execute successfully ok is false and output contains stderr
-func Execute(exe string, env Enviroment, args ...string) (output string, ok bool) {
+func Execute(exe string, args []string, env Enviroment) (output string, ok bool) {
 	c := exec.Command(exe, args...)
 	c.Env = append(c.Env, env.Env()...)
 	stdout := &bytes.Buffer{}
@@ -146,7 +160,7 @@ func Execute(exe string, env Enviroment, args ...string) (output string, ok bool
 	switch {
 	case err == nil:
 		return stdout.String(), true
-	case errors.Is(err, &exec.ExitError{ProcessState: nil}):
+	case errors.Is(err, &exec.ExitError{}):
 		exit := new(exec.ExitError)
 		errors.As(err, &exit)
 		return stderr.String(), false
@@ -154,4 +168,30 @@ func Execute(exe string, env Enviroment, args ...string) (output string, ok bool
 		fmt.Fprintf(os.Stderr, "Cannot execute: error: %s\n%s\n", err, stderr.String())
 		return stderr.String(), false
 	}
+}
+
+// SearchCommand searchs for a plausible command in command, if not found returns the end and false
+func SearchCommand(command []rune, startIndex int) (foundIndex int, ok bool) {
+	if startIndex >= len(command) {
+		return startIndex, false
+	}
+
+	index := startIndex
+
+	for command[index] != '[' {
+		index++
+
+		if index >= len(command) {
+			return index, false
+		}
+	}
+
+	return index, true
+}
+
+func writeRunes(w io.Writer, c []rune) error {
+	content := []byte(string(c))
+
+	_, e := w.Write(content)
+	return e
 }
