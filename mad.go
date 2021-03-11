@@ -135,7 +135,7 @@ func ExecuteCommand(w io.Writer, cmd Command, env Enviroment) bool {
 
 	switch {
 	case env.IsPreview && out != "":
-		fmt.Fprintf(w, "%s\n<!--\f%s\n-->", cmd.Source, out)
+		fmt.Fprintf(w, "%s\n<!--\n%s\n-->", cmd.Source, out)
 	case env.IsPreview && out == "":
 		fmt.Fprint(w, cmd.Source)
 	default:
